@@ -14,12 +14,13 @@ import numpy as np
 import pandas as pd
 import shap
 
-from .config import CANDIDATE_UNIVERSE_PATHS, MODEL_BUNDLE_PATHS
+from .config import CANDIDATE_UNIVERSE_PATHS, MODEL_BUNDLE_PATHS, PANEL_SPEC
 
 _BUNDLE_CACHE: dict[str, dict[str, Any]] = {}
 _UNIVERSE_CACHE: dict[str, "RankingResult"] = {}
 
 ADDRESS_COLUMNS = ["address_ml", "주소", "소재지", "도로명주소", "지번주소"]
+
 
 
 class PipelineError(ValueError):
@@ -836,6 +837,29 @@ MERGED_CSV_PATH = MERGED_TEST_DATA_PATH
 LAND_MODEL_PATH = MODEL_BUNDLE_PATHS["land"]
 BUILDING_MODEL_PATH = MODEL_BUNDLE_PATHS["building"]
 
+# 태양광 사업성 단순 추정용 기준값
+# Vision AI가 패널 수를 제공하지 못한 경우, 가용면적을 설비용량으로 환산할 때 사용합니다.
+BUSINESS_AREA_PER_KW_M2 = {
+    'land': 10.0,      # 토지형: 통로·배치 간격을 포함해 1kW당 10㎡ 적용
+    'building': 7.0,   # 건물형: 평지붕 기준 1kW당 7㎡ 적용
+}
+
+# 발전 전량을 판매한다고 가정한 평균 전력 가치입니다.
+BUSINESS_ENERGY_VALUE_KRW_PER_KWH = 160.0
+
+# 유형별 초기 설치비 단가입니다. 주차장은 캐노피 구조물 비용을 고려해 별도 적용합니다.
+CAPEX_PER_KW_KRW = {
+    'land': 1_200_000.0,
+    'building': 1_300_000.0,
+    'parking_lot': 1_500_000.0,
+}
+
+# 연간 유지관리비를 초기 투자비의 1.5%로 단순 추정합니다.
+ANNUAL_OPEX_RATE = 0.015
+
+# 화면과 보고서에 계산 범위를 명시하기 위한 설명입니다.
+BUSINESS_ESTIMATE_SCOPE = '보조금·부가세·금융비용·계통보강비 제외 단순 추정'
+
 @dataclass
 class IntegratedResult:
     summary: dict[str, Any]
@@ -935,7 +959,49 @@ def iv_unpack_payload(payload: Any) -> list[dict[str, Any]]:
             return payload['items']
         if 'detections' in payload:
             return [payload]
-        return [{'source_id_ml': payload.get('source_id_ml'), 'address': payload.get('address') or payload.get('address_ml'), 'longitude': payload.get('longitude'), 'latitude': payload.get('latitude'), 'detections': [payload]}]
+        if 'predictions' in payload:
+            predictions = payload.get('predictions', [])
+
+            first_prediction = (
+                predictions[0]
+                if predictions
+                and isinstance(predictions[0], dict)
+                else {}
+            )
+
+            return [{
+                'source_id_ml': (
+                    payload.get('source_id_ml')
+                    or first_prediction.get('source_id_ml')
+                    or first_prediction.get('candidate_id')
+                ),
+                'address': (
+                    payload.get('address')
+                    or payload.get('address_ml')
+                    or first_prediction.get('address')
+                    or first_prediction.get('address_ml')
+                ),
+                'longitude': (
+                    payload.get('longitude')
+                    if payload.get('longitude') is not None
+                    else first_prediction.get('longitude')
+                ),
+                'latitude': (
+                    payload.get('latitude')
+                    if payload.get('latitude') is not None
+                    else first_prediction.get('latitude')
+                ),
+                'detections': predictions,
+            }]
+
+        return [{
+            'source_id_ml': payload.get('source_id_ml'),
+            'address': payload.get('address') or payload.get('address_ml'),
+            'longitude': payload.get('longitude'),
+            'latitude': payload.get('latitude'),
+            'detections': [payload],
+        }]
+        # return [{'source_id_ml': payload.get('source_id_ml'), 'address': payload.get('address') or payload.get('address_ml'), 'longitude': payload.get('longitude'), 'latitude': payload.get('latitude'), 'detections': [payload]}]
     if isinstance(payload, list):
         if not payload:
             return []
@@ -1007,13 +1073,122 @@ def iv_aggregate_vision_candidate(wrapper: dict[str, Any]) -> dict[str, Any]:
     else:
         candidate_type = detections[0]['candidate_type']
     model_type = 'building' if candidate_type == 'building' else 'land'
-    all_polygon_points = [point for detection in detections for point in detection.get('polygon', [])]
+
+    # 대표 detection:
+    # 최종 candidate_type과 같은 detection 중 면적이 가장 큰 항목
+    representative_detection = max(
+        (
+            detection
+            for detection in detections
+            if detection.get('candidate_type') == candidate_type
+        ),
+        key=lambda detection: detection.get('real_area') or 0.0,
+    )
+    all_polygon_points = [
+        point
+        for detection in detections
+        for point in detection.get('polygon', [])
+    ]
     polygon_x, polygon_y = iv_polygon_centroid(all_polygon_points)
 
-    def minimum(column: str) -> float | None:
-        values = [detection[column] for detection in detections if detection.get(column) is not None]
-        return min(values) if values else None
-    return {'source_id_ml_json': wrapper.get('source_id_ml'), 'address_json': wrapper.get('address') or wrapper.get('address_ml'), 'longitude_json': iv_to_optional_float(wrapper.get('longitude')), 'latitude_json': iv_to_optional_float(wrapper.get('latitude')), 'polygon_centroid_x': polygon_x, 'polygon_centroid_y': polygon_y, 'candidate_type': candidate_type, 'model_type': model_type, 'confidence': max((detection['confidence'] for detection in detections)), 'pixel_area': total_pixel_area, 'real_area': total_real_area, 'distance_to_road_px': minimum('distance_to_road_px'), 'distance_to_building_px': minimum('distance_to_building_px'), 'distance_to_road_m': minimum('distance_to_road_m'), 'distance_to_building_m': minimum('distance_to_building_m'), 'model_version': wrapper.get('model_version') or next((detection.get('model_version') for detection in detections if detection.get('model_version')), None), 'vision_detection_count': len(detections), 'vision_detections_json': json.dumps(detections, ensure_ascii=False)}
+    def minimum(
+        column: str,
+        default: float | None = None,
+    ) -> float | None:
+        values = [
+            detection[column]
+            for detection in detections
+            if detection.get(column) is not None
+        ]
+        return min(values) if values else default
+
+    road_detected = any(
+        detection.get('distance_to_road_m') is not None
+        for detection in detections
+    )
+
+    building_detected = any(
+        detection.get('distance_to_building_m') is not None
+        for detection in detections
+    )
+
+    return {
+        'source_id_ml_json': wrapper.get('source_id_ml'),
+        'address_json': wrapper.get('address') or wrapper.get('address_ml'),
+        'longitude_json': iv_to_optional_float(wrapper.get('longitude')),
+        'latitude_json': iv_to_optional_float(wrapper.get('latitude')),
+        'polygon_centroid_x': polygon_x,
+        'polygon_centroid_y': polygon_y,
+        'candidate_type': candidate_type,
+        'model_type': model_type,
+        'confidence': max(
+            detection['confidence']
+            for detection in detections
+        ),
+        'pixel_area': total_pixel_area,
+        'real_area': total_real_area,
+        'shape_score': iv_to_optional_float(
+            representative_detection.get('shape_score')
+        ),
+        'shape_grade': representative_detection.get('shape_grade'),
+        'shape_efficiency': iv_to_optional_float(
+            representative_detection.get('shape_efficiency')
+        ),
+        'recommended_layout': representative_detection.get(
+            'recommended_layout'
+        ),
+
+        # 여러 detection이 있으면 가용면적과 패널 수는 합산
+        'usable_area': sum(
+            iv_to_optional_float(detection.get('usable_area')) or 0.0
+            for detection in detections
+        ),
+        'estimated_panel_count': sum(
+            int(iv_to_optional_float(
+                detection.get('estimated_panel_count')
+            ) or 0)
+            for detection in detections
+        ),
+        'distance_to_road_px': minimum(
+            'distance_to_road_px',
+            9999.0,
+        ),
+        'distance_to_building_px': minimum(
+            'distance_to_building_px',
+            9999.0,
+        ),
+        'distance_to_road_m': minimum(
+            'distance_to_road_m',
+            999.0,
+        ),
+        'distance_to_building_m': minimum(
+            'distance_to_building_m',
+            999.0,
+        ),
+
+        'road_detected': road_detected,
+        'building_detected': building_detected,
+        'road_distance_missing_pass_applied': not road_detected,
+        'building_distance_missing_pass_applied': not building_detected,
+
+        'model_version': (
+            wrapper.get('model_version')
+            or next(
+                (
+                    detection.get('model_version')
+                    for detection in detections
+                    if detection.get('model_version')
+                ),
+                None,
+            )
+        ),
+        'vision_detection_count': len(detections),
+        'vision_detections_json': json.dumps(
+            detections,
+            ensure_ascii=False,
+        ),
+    }
+
 EPSG3857_TO_4326 = Transformer.from_crs('EPSG:3857', 'EPSG:4326', always_xy=True)
 
 def iv_haversine_m(lon1: float, lat1: float, lon2: np.ndarray, lat2: np.ndarray) -> np.ndarray:
@@ -1288,27 +1463,160 @@ def iv_predict_group(data: pd.DataFrame, bundle: dict[str, Any], model_type: str
     return scored
 
 def iv_estimate_business_metrics(row: pd.Series) -> dict[str, Any]:
+    """설비용량, 발전량, 매출, 단순 ROI와 회수기간을 계산합니다."""
     model_type = str(row.get('model_type', row.get('Model_Type', 'land')) or 'land').strip().lower()
+    candidate_type = str(row.get('candidate_type', model_type) or model_type).strip().lower()
+
+    # real_area는 검출된 전체 면적이고, usable_area는 배치 제약을 반영한 가용면적입니다.
     real_area = iv_to_optional_float(row.get('real_area'))
-    area_per_kw = AREA_PER_KW_M2.get(model_type, AREA_PER_KW_M2['land'])
+    usable_area = iv_to_optional_float(row.get('usable_area'))
+    estimated_panel_count = iv_to_optional_float(
+        row.get('estimated_panel_count')
+    )
+
+    # 설비용량 계산에는 usable_area를 우선 사용하고, 없을 때만 real_area를 사용합니다.
+    capacity_base_area = (
+        usable_area
+        if usable_area is not None and usable_area > 0
+        else real_area
+    )
+    area_per_kw = BUSINESS_AREA_PER_KW_M2.get(
+        model_type,
+        BUSINESS_AREA_PER_KW_M2['land'],
+    )
+
+    # 주차장은 land 모델을 사용하더라도 캐노피 설치비 단가를 별도로 적용합니다.
+    capex_type = 'parking_lot' if candidate_type == 'parking_lot' else model_type
+    capex_per_kw_krw = CAPEX_PER_KW_KRW.get(
+        capex_type,
+        CAPEX_PER_KW_KRW['land'],
+    )
+
     capacity_kw = None
     annual_generation_kwh = None
     annual_revenue_krw = None
     specific_yield = None
     generation_basis = None
-    if real_area is not None and real_area > 0 and (area_per_kw > 0):
-        capacity_kw = real_area / area_per_kw
+    total_investment_cost_krw = None
+    annual_opex_krw = None
+    annual_net_cashflow_krw = None
+    roi_percent = None
+    payback_years = None
+
+    # Vision AI가 패널 수를 제공하면 모듈 정격출력으로 설비용량을 계산합니다.
+    if estimated_panel_count is not None and estimated_panel_count > 0:
+        capacity_kw = (
+            int(estimated_panel_count)
+            * PANEL_SPEC['power_w']
+            / 1000.0
+        )
+    # 패널 수가 없으면 가용면적을 유형별 1kW당 필요 면적으로 나눕니다.
+    elif (
+        capacity_base_area is not None
+        and capacity_base_area > 0
+        and area_per_kw > 0
+    ):
+        capacity_kw = capacity_base_area / area_per_kw
+
+    if capacity_kw is not None and capacity_kw > 0:
         pvout_daily = iv_to_optional_float(row.get('pvout_avg_daily'))
+
+        # 후보지 PVOUT이 있으면 연간 환산하고, 없으면 config의 기본 발전량을 사용합니다.
         if pvout_daily is not None and pvout_daily > 0:
             specific_yield = pvout_daily * 365.0
             generation_basis = 'pvout_avg_daily × 365'
         else:
             specific_yield = DEFAULT_SPECIFIC_YIELD_KWH_PER_KW_YEAR
             generation_basis = 'DEFAULT_SPECIFIC_YIELD_KWH_PER_KW_YEAR'
+
+        # 연간 발전량과 단순 연매출을 계산합니다.
         annual_generation_kwh = capacity_kw * specific_yield
-        if ENERGY_VALUE_KRW_PER_KWH is not None:
-            annual_revenue_krw = annual_generation_kwh * ENERGY_VALUE_KRW_PER_KWH
-    return {'recommended_capacity_kw': round(capacity_kw, 2) if capacity_kw is not None else None, 'specific_yield_kwh_per_kw_year': round(specific_yield, 2) if specific_yield is not None else None, 'annual_generation_kwh': round(annual_generation_kwh, 2) if annual_generation_kwh is not None else None, 'annual_revenue_krw': round(annual_revenue_krw, 0) if annual_revenue_krw is not None else None, 'generation_basis': generation_basis, 'area_per_kw_m2': area_per_kw}
+        annual_revenue_krw = (
+            annual_generation_kwh
+            * BUSINESS_ENERGY_VALUE_KRW_PER_KWH
+        )
+
+        # 초기 투자비, 연간 운영비, 연간 순현금흐름을 계산합니다.
+        total_investment_cost_krw = capacity_kw * capex_per_kw_krw
+        annual_opex_krw = total_investment_cost_krw * ANNUAL_OPEX_RATE
+        annual_net_cashflow_krw = annual_revenue_krw - annual_opex_krw
+
+        # 단순 1년 차 ROI는 순현금흐름이 음수여도 계산합니다.
+        # 음수 ROI는 해당 가정에서 1년 차 운영수익이 투자비 대비 손실임을 의미합니다.
+        if total_investment_cost_krw > 0:
+            roi_percent = (
+                annual_net_cashflow_krw
+                / total_investment_cost_krw
+                * 100.0
+            )
+
+        # 단순 회수기간은 연간 순현금흐름이 양수일 때만 정의합니다.
+        # 매년 동일한 순현금흐름이 발생한다는 단순 가정이며, 할인율과 열화는 반영하지 않습니다.
+        if annual_net_cashflow_krw > 0:
+            payback_years = (
+                total_investment_cost_krw
+                / annual_net_cashflow_krw
+            )
+
+    # 계산 결과는 기존 ranking DataFrame과 최종 JSON에 병합될 수 있도록 dict로 반환합니다.
+    return {
+        'recommended_capacity_kw': (
+            round(capacity_kw, 2)
+            if capacity_kw is not None
+            else None
+        ),
+        'specific_yield_kwh_per_kw_year': (
+            round(specific_yield, 2)
+            if specific_yield is not None
+            else None
+        ),
+        'annual_generation_kwh': (
+            round(annual_generation_kwh, 2)
+            if annual_generation_kwh is not None
+            else None
+        ),
+        'annual_revenue_krw': (
+            round(annual_revenue_krw, 0)
+            if annual_revenue_krw is not None
+            else None
+        ),
+        'capex_per_kw_krw': round(capex_per_kw_krw, 0),
+        'total_investment_cost_krw': (
+            round(total_investment_cost_krw, 0)
+            if total_investment_cost_krw is not None
+            else None
+        ),
+        'annual_opex_rate': ANNUAL_OPEX_RATE,
+        'annual_opex_krw': (
+            round(annual_opex_krw, 0)
+            if annual_opex_krw is not None
+            else None
+        ),
+        'annual_net_cashflow_krw': (
+            round(annual_net_cashflow_krw, 0)
+            if annual_net_cashflow_krw is not None
+            else None
+        ),
+        'roi_percent': (
+            round(roi_percent, 2)
+            if roi_percent is not None
+            else None
+        ),
+        'payback_years': (
+            round(payback_years, 2)
+            if payback_years is not None
+            else None
+        ),
+        'generation_basis': generation_basis,
+        'area_per_kw_m2': area_per_kw,
+        'revenue_unit_price_krw_per_kwh': BUSINESS_ENERGY_VALUE_KRW_PER_KWH,
+        'roi_method': 'simple_first_year_roi',
+        'roi_formula': 'annual_net_cashflow_krw / total_investment_cost_krw × 100',
+        'payback_method': 'constant_annual_cashflow_simple_payback',
+        'payback_formula': 'total_investment_cost_krw / annual_net_cashflow_krw',
+        'financial_model_level': 'preliminary_screening',
+        'estimate_scope': BUSINESS_ESTIMATE_SCOPE,
+    }
 
 def iv_build_integrated_ranking(passed_scored_df: pd.DataFrame, failed_df: pd.DataFrame) -> pd.DataFrame:
     frames = []
@@ -1460,7 +1768,16 @@ def run_integrated_pipeline(payload: Any) -> IntegratedResult:
             ml_reason = 'Rule-based 검토에서 부적합으로 판정되어 ML 점수는 0점 처리했습니다.'
         rule_pass = bool(row.get('Rule_Pass_For_Next_Step'))
         candidate_type = str(row.get('candidate_type', model_type)).strip().lower()
-        return {'target_type': settings['target_type'], '1_site_info': {'site_id': str(site_id) if site_id is not None else None, 'site_name': site_name, 'address': address, 'longitude': iv_json_safe(row.get('longitude')), 'latitude': iv_json_safe(row.get('latitude')), 'space_type': first_available_value(row, ['space_type', '자산구분_ML', '설치구분', '재산구분', '지목', '건물용도'], default=settings['default_space_type']), 'vision_candidate_type': candidate_type, 'total_area_m2': iv_json_safe(total_area), 'available_area_m2': iv_json_safe(real_area), 'availability_rate_percent': availability_rate, 'owner_agency': first_available_value(row, ['owner_agency', '소유기관', '관리기관', '기관명', '소관기관'])}, '2_scores_and_evaluation': {'grade': iv_json_safe(row.get('Solar_Readiness_Grade')), 'total_score': iv_json_safe(row.get('Solar_Readiness_Score')), 'priority_rank': iv_json_safe(row.get('Candidate_Rank')), 'status': make_status(row), 'suitability': {'rule_pass': rule_pass, 'rule_decision': iv_json_safe(row.get('Rule_Final_Decision')), 'rule_message': iv_json_safe(row.get('Rule_Final_Message')), 'suitability_status': iv_json_safe(row.get('Suitability_Status'))}, 'detail_scores': {'ml_technical_score': iv_json_safe(row.get('ML_Score')), 'ml_probability': iv_json_safe(probability), 'ml_reason': ml_reason, 'vision_area_score': iv_json_safe(row.get('Vision_Area_Score')), 'vision_confidence': iv_json_safe(row.get('confidence')), 'rule_based_score': 100.0 if rule_pass else 0.0}, 'xai_explanation': {'bonus_reason': bonus_reasons if rule_pass else [], 'penalty_reason': penalty_reasons if rule_pass else [str(row.get('Rule_Final_Message', 'Rule-based 검토 부적합'))]}}, '3_vision_ai_and_simulation': {'vision_analysis': {'candidate_type': candidate_type, 'confidence': iv_json_safe(row.get('confidence')), 'pixel_area_px2': iv_json_safe(row.get('pixel_area')), 'real_area_m2': iv_json_safe(real_area), 'distance_to_road_px': iv_json_safe(row.get('distance_to_road_px')), 'distance_to_building_px': iv_json_safe(row.get('distance_to_building_px')), 'distance_to_road_m': iv_json_safe(row.get('distance_to_road_m')), 'distance_to_building_m': iv_json_safe(row.get('distance_to_building_m')), 'model_version': iv_json_safe(row.get('model_version')), 'slope_degree': iv_json_safe(row.get('slope_avg')) if model_type == 'land' else None, 'aspect_direction_degree': iv_json_safe(row.get('slope_dir')) if model_type == 'land' else None}, 'simulation': {'recommended_capacity_kw': iv_json_safe(row.get('recommended_capacity_kw')), 'annual_generation_kwh': iv_json_safe(row.get('annual_generation_kwh')), 'specific_yield_kwh_per_kw_year': iv_json_safe(row.get('specific_yield_kwh_per_kw_year')), 'generation_basis': iv_json_safe(row.get('generation_basis')), 'area_per_kw_m2': iv_json_safe(row.get('area_per_kw_m2')), 'annual_revenue_krw': iv_json_safe(row.get('annual_revenue_krw')), 'revenue_unit_price_krw_per_kwh': ENERGY_VALUE_KRW_PER_KWH}}, '4_risk_and_support': {'rule_based_risk_check': {'grid_connection': {'substation_distance_km': iv_json_safe(row.get('substation_dist_km')), 'powerline_distance_km': iv_json_safe(row.get('powerline_dist_km'))}, 'regulation': iv_json_safe(row.get('Rule_Final_Message')), 'distance_risk': {'distance_to_road_m': iv_json_safe(row.get('distance_to_road_m')), 'distance_to_building_m': iv_json_safe(row.get('distance_to_building_m'))}, 'public_complaint': None}, 'recommended_subsidies': []}, '5_pre_investigation_checklist': settings['checklist']}
+        return {'target_type': settings['target_type'], '1_site_info': {'site_id': str(site_id) if site_id is not None else None, 'site_name': site_name, 'address': address, 'longitude': iv_json_safe(row.get('longitude')), 'latitude': iv_json_safe(row.get('latitude')), 'space_type': first_available_value(row, ['space_type', '자산구분_ML', '설치구분', '재산구분', '지목', '건물용도'], default=settings['default_space_type']), 'vision_candidate_type': candidate_type, 'total_area_m2': iv_json_safe(total_area), 'available_area_m2': iv_json_safe(real_area), 'availability_rate_percent': availability_rate, 'owner_agency': first_available_value(row, ['owner_agency', '소유기관', '관리기관', '기관명', '소관기관'])}, '2_scores_and_evaluation': {'grade': iv_json_safe(row.get('Solar_Readiness_Grade')), 'total_score': iv_json_safe(row.get('Solar_Readiness_Score')), 'priority_rank': iv_json_safe(row.get('Candidate_Rank')), 'status': make_status(row), 'suitability': {'rule_pass': rule_pass, 'rule_decision': iv_json_safe(row.get('Rule_Final_Decision')), 'rule_message': iv_json_safe(row.get('Rule_Final_Message')), 'suitability_status': iv_json_safe(row.get('Suitability_Status'))}, 'detail_scores': {'ml_technical_score': iv_json_safe(row.get('ML_Score')), 'ml_probability': iv_json_safe(probability), 'ml_reason': ml_reason, 'vision_area_score': iv_json_safe(row.get('Vision_Area_Score')), 'vision_confidence': iv_json_safe(row.get('confidence')), 'rule_based_score': 100.0 if rule_pass else 0.0}, 'xai_explanation': {'bonus_reason': bonus_reasons if rule_pass else [], 'penalty_reason': penalty_reasons if rule_pass else [str(row.get('Rule_Final_Message', 'Rule-based 검토 부적합'))]}}, '3_vision_ai_and_simulation': {'vision_analysis': {'candidate_type': candidate_type, 'confidence': iv_json_safe(row.get('confidence')), 'pixel_area_px2': iv_json_safe(row.get('pixel_area')), 'real_area_m2': iv_json_safe(real_area), 'shape_score': iv_json_safe(row.get('shape_score')),'shape_grade': iv_json_safe(row.get('shape_grade')),'shape_efficiency': iv_json_safe(row.get('shape_efficiency')),'recommended_layout': iv_json_safe(row.get('recommended_layout')),'usable_area_m2': iv_json_safe(row.get('usable_area')),'estimated_panel_count': iv_json_safe(row.get('estimated_panel_count')), 'distance_to_road_px': iv_json_safe(row.get('distance_to_road_px')), 'distance_to_building_px': iv_json_safe(row.get('distance_to_building_px')), 'distance_to_road_m': iv_json_safe(row.get('distance_to_road_m')), 'distance_to_building_m': iv_json_safe(row.get('distance_to_building_m')), 'model_version': iv_json_safe(row.get('model_version')), 'slope_degree': iv_json_safe(row.get('slope_avg')) if model_type == 'land' else None, 'aspect_direction_degree': iv_json_safe(row.get('slope_dir')) if model_type == 'land' else None}, 'simulation': {'recommended_capacity_kw': iv_json_safe(row.get('recommended_capacity_kw')), 'annual_generation_kwh': iv_json_safe(row.get('annual_generation_kwh')), 'specific_yield_kwh_per_kw_year': iv_json_safe(row.get('specific_yield_kwh_per_kw_year')), 'generation_basis': iv_json_safe(row.get('generation_basis')), 'area_per_kw_m2': iv_json_safe(row.get('area_per_kw_m2')), 'annual_revenue_krw': iv_json_safe(row.get('annual_revenue_krw')), 'revenue_unit_price_krw_per_kwh': iv_json_safe(row.get('revenue_unit_price_krw_per_kwh')), 'capex_per_kw_krw': iv_json_safe(row.get('capex_per_kw_krw')), 'total_investment_cost_krw': iv_json_safe(row.get('total_investment_cost_krw')), 'annual_opex_rate': iv_json_safe(row.get('annual_opex_rate')), 'annual_opex_krw': iv_json_safe(row.get('annual_opex_krw')), 'annual_net_cashflow_krw': iv_json_safe(row.get('annual_net_cashflow_krw')), 'roi_percent': iv_json_safe(row.get('roi_percent')), 'payback_years': iv_json_safe(row.get('payback_years')), 'roi_method': iv_json_safe(row.get('roi_method')), 'roi_formula': iv_json_safe(row.get('roi_formula')), 'payback_method': iv_json_safe(row.get('payback_method')), 'payback_formula': iv_json_safe(row.get('payback_formula')), 'financial_model_level': iv_json_safe(row.get('financial_model_level')), 'estimate_scope': iv_json_safe(row.get('estimate_scope'))}}, '4_risk_and_support': {'rule_based_risk_check': {'grid_connection': {'substation_distance_km': iv_json_safe(row.get('substation_dist_km')), 'powerline_distance_km': iv_json_safe(row.get('powerline_dist_km'))}, 'regulation': iv_json_safe(row.get('Rule_Final_Message')), 'distance_risk': {'distance_to_road_m': iv_json_safe(row.get('distance_to_road_m')), 'distance_to_building_m': iv_json_safe(row.get('distance_to_building_m'))}, 'public_complaint': None}, 'recommended_subsidies': []}, '5_pre_investigation_checklist': settings['checklist']}
     output_json = [build_candidate_json(row) for _, row in ranking_df.iterrows()]
+    print('\n[RANKING] 최종 반환 JSON')
+    print(
+        json.dumps(
+            output_json,
+            ensure_ascii=False,
+            indent=2,
+            default=str,
+        )
+    )
     summary = {'vision_received': len(wrappers), 'vision_aggregated': len(vision_df), 'matched_and_reviewed': len(reviewed_df), 'rule_passed': len(passed_df), 'ranked': len(ranking_df), 'rule_failed_included': int((ranking_df['Suitability_Status'] == 'FAIL').sum()) if not ranking_df.empty else 0, 'land_model_count': int((ranking_df['Model_Type'] == 'land').sum()) if not ranking_df.empty else 0, 'building_model_count': int((ranking_df['Model_Type'] == 'building').sum()) if not ranking_df.empty else 0, 'error_count': len(vision_errors + match_errors)}
     return IntegratedResult(summary=summary, reviewed_df=reviewed_df, passed_df=passed_df, ranking_df=ranking_df, results=output_json, errors=vision_errors + match_errors)
