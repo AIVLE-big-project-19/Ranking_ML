@@ -963,7 +963,29 @@ def iv_json_safe(value: Any) -> Any:
         return float(value)
     if isinstance(value, np.bool_):
         return bool(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, pd.Series):
+        # A duplicate column name upstream can make row.get(...) return a
+        # Series instead of a scalar; surface it as a list rather than 500ing.
+        return value.tolist()
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return value.isoformat()
     return value
+
+def iv_deep_json_safe(value: Any) -> Any:
+    """Recursively sanitize a nested dict/list structure for JSON serialization.
+
+    build_candidate_json wraps most leaf values with iv_json_safe already, but
+    a few fields pass raw DataFrame values through (e.g. text columns that turn
+    out to be numpy scalars), so this is applied once at the API boundary as a
+    safety net instead of chasing every call site.
+    """
+    if isinstance(value, dict):
+        return {key: iv_deep_json_safe(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [iv_deep_json_safe(item) for item in value]
+    return iv_json_safe(value)
 
 def iv_load_resources():
     merged_df = iv_read_csv_flexible(MERGED_CSV_PATH)
@@ -1673,8 +1695,10 @@ def iv_build_integrated_ranking(passed_scored_df: pd.DataFrame, failed_df: pd.Da
         pixel_area = pd.to_numeric(passed['pixel_area'], errors='coerce').fillna(0.0).clip(lower=0.0)
         zero_area_mask = real_area.le(0.0) | pixel_area.le(0.0)
         # vision area score 추천 전력용량 처리
-        passed['recommended_capacity_kw'] = passed.apply(iv_calculate_recommended_capacity_kw,axis=1)
-        passed['Vision_Area_Score'] = (passed['recommended_capacity_kw'] / VISION_CAPACITY_FULL_SCORE_KW).clip(0.0, 1.0)
+        # 최종 recommended_capacity_kw는 iv_estimate_business_metrics가 다시 계산해 뒤에서
+        # concat되므로, 여기서는 이름을 다르게 둬서 컬럼이 중복되지 않게 한다.
+        vision_capacity_kw = passed.apply(iv_calculate_recommended_capacity_kw, axis=1)
+        passed['Vision_Area_Score'] = (vision_capacity_kw / VISION_CAPACITY_FULL_SCORE_KW).clip(0.0, 1.0)
         # passed['Vision_Area_Score'] = np.log1p(estimated_panel_count).rank(pct=True, method='average').where(estimated_panel_count > 0, 0.0)
         # passed['Vision_Area_Score'] = np.log1p(usable_area).rank(pct=True, method='average').where(usable_area > 0, 0.0)
         # passed['Vision_Area_Score'] = np.log1p(real_area).rank(pct=True, method='average').where(real_area > 0, 0.0)

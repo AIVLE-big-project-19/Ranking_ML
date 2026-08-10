@@ -282,12 +282,12 @@ async def analyze_vision_json(
             detail=f"Vision 연계 통합 분석 중 오류가 발생했습니다: {exc}",
         ) from exc
 
-    return {
+    return pipeline.iv_deep_json_safe({
         "success": True,
         "summary": result.summary,
         "results": result.results,
         "errors": result.errors,
-    }
+    })
 
 
 @app.post("/analyze/vision")
