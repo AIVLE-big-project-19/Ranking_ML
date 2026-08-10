@@ -893,39 +893,43 @@ def iv_to_optional_float(value: Any) -> float | None:
 # 추천용량 500kW가 100점.
 VISION_CAPACITY_FULL_SCORE_KW = 500.0
 
-def iv_calculate_recommended_capacity_kw(row: pd.Series) -> float:
+def iv_calculate_recommended_capacity_kw(row) -> float:
     model_type = str(
         row.get('model_type', row.get('Model_Type', 'land')) or 'land'
     ).strip().lower()
 
-    estimated_panel_count = iv_to_optional_float(
-        row.get('estimated_panel_count')
-    )
+    try:
+        estimated_panel_count = float(row.get('estimated_panel_count') or 0)
+    except (TypeError, ValueError):
+        estimated_panel_count = 0.0
 
-    usable_area = iv_to_optional_float(row.get('usable_area'))
-    real_area = iv_to_optional_float(row.get('real_area'))
+    try:
+        usable_area = float(row.get('usable_area') or 0)
+    except (TypeError, ValueError):
+        usable_area = 0.0
+
+    try:
+        real_area = float(row.get('real_area') or 0)
+    except (TypeError, ValueError):
+        real_area = 0.0
 
     # 1순위: Vision 패널 수
-    if estimated_panel_count is not None and estimated_panel_count > 0:
+    if estimated_panel_count > 0:
         return (
             int(estimated_panel_count)
             * PANEL_SPEC['power_w']
             / 1000.0
         )
 
-    # 2순위: 가용면적
-    capacity_base_area = (
-        usable_area
-        if usable_area is not None and usable_area > 0
-        else real_area
-    )
+    # 2순위: usable_area, 없으면 real_area
+    capacity_base_area = usable_area if usable_area > 0 else real_area
 
     area_per_kw = BUSINESS_AREA_PER_KW_M2.get(
         model_type,
         BUSINESS_AREA_PER_KW_M2['land']
     )
 
-    if capacity_base_area is not None and capacity_base_area > 0:
+    if capacity_base_area > 0:
         return capacity_base_area / area_per_kw
 
     return 0.0
@@ -1668,8 +1672,8 @@ def iv_build_integrated_ranking(passed_scored_df: pd.DataFrame, failed_df: pd.Da
         pixel_area = pd.to_numeric(passed['pixel_area'], errors='coerce').fillna(0.0).clip(lower=0.0)
         zero_area_mask = real_area.le(0.0) | pixel_area.le(0.0)
         # vision area score 추천 전력용량 처리
-        passed['recommended_capacity_kw'] = passed.apply(iv_calculate_recommended_capacity_kw, axis=1)
-        passed['Vision_Area_Score'] = (passed['recommended_capacity_kw']/ VISION_CAPACITY_FULL_SCORE_KW).clip(0.0, 1.0)
+        passed['recommended_capacity_kw'] = passed.apply(iv_calculate_recommended_capacity_kw,axis=1)
+        passed['Vision_Area_Score'] = (passed['recommended_capacity_kw'] / VISION_CAPACITY_FULL_SCORE_KW).clip(0.0, 1.0)
         # passed['Vision_Area_Score'] = np.log1p(estimated_panel_count).rank(pct=True, method='average').where(estimated_panel_count > 0, 0.0)
         # passed['Vision_Area_Score'] = np.log1p(usable_area).rank(pct=True, method='average').where(usable_area > 0, 0.0)
         # passed['Vision_Area_Score'] = np.log1p(real_area).rank(pct=True, method='average').where(real_area > 0, 0.0)
