@@ -1625,7 +1625,8 @@ def iv_build_integrated_ranking(passed_scored_df: pd.DataFrame, failed_df: pd.Da
         real_area = pd.to_numeric(passed['real_area'], errors='coerce').fillna(0.0).clip(lower=0.0)
         pixel_area = pd.to_numeric(passed['pixel_area'], errors='coerce').fillna(0.0).clip(lower=0.0)
         zero_area_mask = real_area.le(0.0) | pixel_area.le(0.0)
-        passed['Vision_Area_Score'] = np.log1p(real_area).rank(pct=True, method='average').where(real_area > 0, 0.0)
+        passed['Vision_Area_Score'] = np.log1p(capacity_base_area).rank(pct=True, method='average').where(capacity_base_area > 0, 0.0)
+        # passed['Vision_Area_Score'] = np.log1p(real_area).rank(pct=True, method='average').where(real_area > 0, 0.0)
         passed['Final_Readiness_Probability'] = ML_WEIGHT * passed['Solar_Readiness_Probability'] + AREA_WEIGHT * passed['Vision_Area_Score']
         passed['Solar_Readiness_Score'] = (passed['Final_Readiness_Probability'] * 100).round(4)
         passed.loc[zero_area_mask, ['Solar_Readiness_Probability', 'ML_Score', 'Vision_Area_Score', 'Final_Readiness_Probability', 'Solar_Readiness_Score']] = 0.0
