@@ -891,7 +891,8 @@ def iv_to_optional_float(value: Any) -> float | None:
 
 # vision 으로 받아온 값의 추천 전력양 구하는 함수
 # 추천용량 500kW가 100점.
-VISION_CAPACITY_FULL_SCORE_KW = 500.0
+# 좀 크다 150으로 바꿀꺼임
+VISION_CAPACITY_FULL_SCORE_KW = 150.0
 
 def iv_calculate_recommended_capacity_kw(row) -> float:
     model_type = str(
