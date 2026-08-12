@@ -1212,28 +1212,20 @@ def iv_aggregate_vision_candidate(wrapper: dict[str, Any]) -> dict[str, Any]:
             iv_to_optional_float(detection.get('usable_area')) or 0.0
             for detection in detections
         ),
-        'estimated_panel_count': sum(
-            int(iv_to_optional_float(
-                detection.get('estimated_panel_count')
-            ) or 0)
-            for detection in detections
+        'estimated_panel_count': (
+            sum(
+                int(iv_to_optional_float(detection.get('estimated_panel_count')) or 0)
+                for detection in detections
+            )
+            if any(detection.get('estimated_panel_count') is not None for detection in detections)
+            else None
         ),
-        'distance_to_road_px': minimum(
-            'distance_to_road_px',
-            9999.0,
-        ),
-        'distance_to_building_px': minimum(
-            'distance_to_building_px',
-            9999.0,
-        ),
-        'distance_to_road_m': minimum(
-            'distance_to_road_m',
-            999.0,
-        ),
-        'distance_to_building_m': minimum(
-            'distance_to_building_m',
-            999.0,
-        ),
+        # 결측 거리를 임의의 큰 숫자로 바꾸면 실제 거리처럼 표시되므로
+        # 원천값이 없을 때는 None을 유지한다.
+        'distance_to_road_px': minimum('distance_to_road_px'),
+        'distance_to_building_px': minimum('distance_to_building_px'),
+        'distance_to_road_m': minimum('distance_to_road_m'),
+        'distance_to_building_m': minimum('distance_to_building_m'),
 
         'road_detected': road_detected,
         'building_detected': building_detected,
