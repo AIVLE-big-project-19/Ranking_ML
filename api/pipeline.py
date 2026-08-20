@@ -27,6 +27,7 @@ class PipelineError(ValueError):
     """입력 데이터나 설정이 잘못되어 API가 4xx로 응답해야 하는 경우."""
 
 
+# 요청 유형에 맞는 모델 번들을 불러오고 재사용할 수 있도록 캐시에 저장합니다.
 def load_bundle(dataset_type: str) -> dict[str, Any]:
     dataset_type = dataset_type.lower()
     if dataset_type not in MODEL_BUNDLE_PATHS:
@@ -48,6 +49,7 @@ def load_bundle(dataset_type: str) -> dict[str, Any]:
     return bundle
 
 
+# 업로드된 CSV 또는 Excel 파일을 DataFrame으로 변환합니다.
 def read_table(filename: str, content: bytes) -> pd.DataFrame:
     suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     buffer = io.BytesIO(content)
@@ -67,6 +69,7 @@ def read_table(filename: str, content: bytes) -> pd.DataFrame:
     raise PipelineError("업로드 파일은 csv, xlsx 또는 xls 형식이어야 합니다.")
 
 
+# 학습 Feature와 중앙값을 적용해 후보지별 설치 가능 확률과 ML 점수를 계산합니다.
 def predict_and_score(bundle: dict[str, Any], test_df: pd.DataFrame, *, filter_rule_excluded: bool) -> pd.DataFrame:
     feature_columns = bundle["feature_columns"]
     train_medians = pd.Series(bundle["train_medians"])
@@ -112,6 +115,7 @@ def predict_and_score(bundle: dict[str, Any], test_df: pd.DataFrame, *, filter_r
     return scored_test
 
 
+# 사용자가 지정한 Feature 방향과 가중치로 보조 정책 점수를 계산합니다.
 def calculate_policy_score(data: pd.DataFrame, weight_config: dict, train_medians: pd.Series) -> pd.Series:
     if not weight_config:
         return pd.Series(0.0, index=data.index, dtype=float)
@@ -145,6 +149,7 @@ def calculate_policy_score(data: pd.DataFrame, weight_config: dict, train_median
     return policy_score
 
 
+# ML 점수와 정책 점수를 결합해 전체·지역 순위와 A/B/C 등급을 생성합니다.
 def build_ranking(
     scored_test: pd.DataFrame,
     bundle: dict[str, Any],
@@ -240,6 +245,7 @@ def _build_reason_sentence(feature_name: str, feature_value: float, percentile: 
     )
 
 
+# 상위 후보의 SHAP 값을 계산하고 주요 추천 요인과 설명 문장을 생성합니다.
 def compute_shap_details(
     scored_test: pd.DataFrame,
     candidate_ranking: pd.DataFrame,
@@ -650,6 +656,7 @@ def build_candidate_json(
     }
 
 
+# 단독 ML 랭킹 실행에 사용하는 필터, 가중치, 출력 옵션입니다.
 @dataclass
 class RankOptions:
     filter_rule_excluded: bool = True
@@ -667,6 +674,7 @@ class RankOptions:
             self.policy_weight_config = {}
 
 
+# 단독 ML 랭킹의 DataFrame과 JSON 결과를 묶어 반환합니다.
 @dataclass
 class RankingResult:
     dataset_type: str
