@@ -46,6 +46,7 @@ app.add_middleware(
 )
 
 
+# 요청한 데이터 유형이 토지형 또는 건물형인지 확인합니다.
 def _validate_dataset_type(dataset_type: str) -> str:
     dataset_type = dataset_type.lower()
     if dataset_type not in VALID_DATASET_TYPES:
@@ -53,6 +54,7 @@ def _validate_dataset_type(dataset_type: str) -> str:
     return dataset_type
 
 
+# 문자열로 전달된 정책 가중치 설정을 JSON 객체로 변환합니다.
 def _parse_policy_weight_config(raw: str | None) -> dict:
     if not raw:
         return {}
@@ -80,6 +82,7 @@ def _df_to_records(df: pd.DataFrame) -> list[dict]:
     return json.loads(df.to_json(orient="records", force_ascii=False))
 
 
+# 업로드 파일과 옵션을 단독 ML 랭킹 파이프라인에 전달합니다.
 async def _run_pipeline_from_upload(
     dataset_type: str,
     file: UploadFile,
@@ -122,6 +125,7 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+# 유형별 모델 정보와 학습 Feature 목록을 반환합니다.
 @app.get("/models")
 def list_models() -> dict:
     result = {}
@@ -140,6 +144,7 @@ def list_models() -> dict:
     return result
 
 
+# 전체 후보군에서 주소를 검색하고 전체 순위와 검색 결과 내 순위를 반환합니다.
 @app.get("/candidates/{dataset_type}/search")
 def search_candidates(
     dataset_type: str,
@@ -158,6 +163,7 @@ def search_candidates(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+# 업로드한 후보지 파일의 ML 점수, 순위, SHAP 결과를 반환합니다.
 @app.post("/rank/{dataset_type}")
 async def rank(
     dataset_type: str,
@@ -200,6 +206,7 @@ async def rank(
     }
 
 
+# 단독 ML 랭킹 결과를 CSV, Excel, JSON이 포함된 ZIP으로 반환합니다.
 @app.post("/rank/{dataset_type}/export")
 async def rank_export(
     dataset_type: str,
@@ -267,6 +274,7 @@ async def rank_export(
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
+# Vision AI가 전송한 JSON Body를 받아 통합 분석을 수행합니다.
 @app.post("/analyze/vision-json")
 async def analyze_vision_json(
     payload: dict | list = Body(..., description="Vision AI 서버가 전송하는 분석 결과 JSON"),
@@ -290,6 +298,7 @@ async def analyze_vision_json(
     })
 
 
+# Vision JSON 파일을 후보 데이터와 매칭해 Rule, ML, SHAP 분석을 수행합니다.
 @app.post("/analyze/vision")
 async def analyze_vision(
     file: Annotated[UploadFile, File(description="Vision AI 분석 결과 JSON")],
@@ -318,6 +327,7 @@ async def analyze_vision(
     }
 
 
+# Vision 통합 분석 결과를 CSV, Excel, JSON이 포함된 ZIP으로 반환합니다.
 @app.post("/analyze/vision/export")
 async def analyze_vision_export(
     file: Annotated[UploadFile, File(description="Vision AI 분석 결과 JSON")],
