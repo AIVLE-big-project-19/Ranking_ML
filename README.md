@@ -38,6 +38,9 @@ Building_Test_Chungcheong_Uninstalled.csv
 ## 1. Rule-based 검토 실행
 
 ### 필요한 파일
+```text
+태양광_RuleBase_조건.xlsx
+```
 
 토지형:
 
