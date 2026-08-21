@@ -32,6 +32,7 @@ Land_model_bundle.pkl
 Building_model_bundle.pkl
 Land_Test_Chungcheong_Uninstalled.csv
 Building_Test_Chungcheong_Uninstalled.csv
+태양광_RuleBase_조건.xlsx
 ```
 
 ## 1. Rule-based 검토 실행
