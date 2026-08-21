@@ -38,15 +38,12 @@ Building_Test_Chungcheong_Uninstalled.csv
 ## 1. Rule-based 검토 실행
 
 ### 필요한 파일
-```text
-태양광_RuleBase_조건.xlsx
-```
 
 토지형:
 
 ```text
 Solar_RuleBase_Review_Aligned.ipynb
-태양광_RuleBase_실행용_수정본.xlsx
+태양광_RuleBase_조건.xlsx
 Land_Test_Chungcheong_Uninstalled.csv
 ```
 
@@ -54,7 +51,7 @@ Land_Test_Chungcheong_Uninstalled.csv
 
 ```text
 Solar_RuleBase_Review_Aligned.ipynb
-태양광_RuleBase_실행용_수정본.xlsx
+태양광_RuleBase_조건.xlsx
 Building_Test_Chungcheong_Uninstalled.csv
 ```
 
@@ -70,7 +67,7 @@ DATASET_TYPE = "land"
 입력 파일명을 실제 업로드한 파일명과 맞춘 뒤 셀을 위에서부터 실행합니다.
 
 ```python
-RULE_XLSX_FILENAME = "태양광_RuleBase_실행용_수정본.xlsx"
+RULE_XLSX_FILENAME = "태양광_RuleBase_조건.xlsx"
 LAND_TEST_FILENAME = "Land_Test_Chungcheong_Uninstalled.csv"
 BUILDING_TEST_FILENAME = "Building_Test_Chungcheong_Uninstalled.csv"
 ```
