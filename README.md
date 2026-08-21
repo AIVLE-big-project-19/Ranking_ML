@@ -186,3 +186,26 @@ Land_Top20_Candidate_Analysis.json
 ## 참고
 
 모델 파일과 대용량 CSV는 저장소 용량을 고려해 `.gitignore`로 제외하고 별도로 관리하는 것을 권장합니다.
+
+
+## 부록
+
+## ML 모델
+
+### 모델 구성
+
+후보지 유형에 따라 서로 다른 모델 번들을 사용합니다.
+
+| 구분 | 토지형 모델 | 건물형 모델 |
+|---|---|---|
+| 모델 파일 | `Land_model_bundle.pkl` | `Building_model_bundle.pkl` |
+| 적용 대상 | 유휴 토지, 나대지, 농지, 주차장 등 | 공공건축물 및 건물 지붕 |
+| 기본 Feature | 일사량·기상·지형 | 일사량·기상·전력계통 |
+| 제외 Feature | 없음 | `slope_avg`, `slope_dir`, `elevation_avg`, `Hillshade`, `Southness` |
+| 예측값 | 태양광 설치 적합 확률 | 태양광 설치 적합 확률 |
+| 최종 알고리즘 | LightGBM | LightGBM |
+
+### 학습 코드
+
+모델 학습 코드는 [`LightGBM model - training code`](./LightGBM%20model%20-%20training%20code/) 폴더에서 확인할 수 있습니다.
+
