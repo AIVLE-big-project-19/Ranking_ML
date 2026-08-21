@@ -27,7 +27,6 @@
 ```text
 Solar_RuleBase_Review_Aligned.ipynb
 Common_Test_Ranking_Aligned.ipynb
-태양광_RuleBase_실행용_수정본.xlsx
 Land_model_bundle.pkl
 Building_model_bundle.pkl
 Land_Test_Chungcheong_Uninstalled.csv
